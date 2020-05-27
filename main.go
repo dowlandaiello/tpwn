@@ -1,14 +1,19 @@
 package main
 
 import (
+	"strings"
+
 	"github.com/gocolly/colly/v2"
 	"github.com/urfave/cli/v2"
 
 	"bufio"
 	"fmt"
+	"log"
 	"os"
-	"strings"
 )
+
+// MaxSources is the maximum number of quizlet sets that will be scanned.
+const MaxSources = 5
 
 // QueryType represents all possible types of queries.
 type QueryType int
@@ -83,7 +88,12 @@ func main() {
 			question := q.NextQuestion()
 
 			for len(question) > 0 {
-				fmt.Println(GetAnswer(question))
+				answer, err := GetAnswer(question)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				fmt.Println(answer)
 
 				question = q.NextQuestion()
 			}
@@ -96,26 +106,53 @@ func main() {
 }
 
 // GetAnswer searches quizlet for the provided question.
-func GetAnswer(question string) (string, error) {
+func GetAnswer(question string) (answer string, err error) {
 	googleURL := fmt.Sprintf("https://www.google.com/search?client=firefox-b-1-d&q=%s", strings.Replace(question, " ", "+", -1))
 
-	c := colly.NewCollector(colly.MaxDepth(2))
+	occurrences := make(map[string]int)
+
+	c := colly.NewCollector(colly.MaxDepth(0), colly.Async(true))
+	c.Limit(&colly.LimitRule{DomainGlob: "*", Parallelism: 5})
+
+	i := 0
 
 	c.OnHTML("a[href]", func(e *colly.HTMLElement) {
 		link := e.Attr("href")
 
-		if strings.Contains(link, "quizlet.com") {
-			fmt.Println(link)
+		if strings.Contains(link, "quizlet.com") && !strings.Contains(link, "create-set") && i < MaxSources {
+			c.OnRequest(func(r *colly.Request) {
+				r.Headers.Set("Accept", "*/*")
+				r.Headers.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:76.0) Gecko/20100101 Firefox/76.0")
+			})
 
-			c.Visit(strings.Split(link, "=")[1])
+			lParts := strings.Split(link, "=")
+			if len(lParts) > 1 {
+				link = lParts[1]
+			}
+
+			i++
+
+			c.Visit(link)
 		}
 	})
 
-	c.OnHTML(".SetPageTerm-definitionText", func(e *colly.HTMLElement) {
-		fmt.Println(e.Text)
+	c.OnHTML(".SetPageTerm-inner", func(e *colly.HTMLElement) {
+		if strings.ToLower(e.ChildText(".SetPageTerm-wordText")) == strings.ToLower(question) {
+			possibleAnswer := e.ChildText(".SetPageTerm-definitionText")
+			occurrences[possibleAnswer]++
+
+			if occurrences[possibleAnswer] > occurrences[answer] {
+				answer = possibleAnswer
+			}
+		}
+	})
+
+	c.OnError(func(_ *colly.Response, reqErr error) {
+		err = reqErr
 	})
 
 	c.Visit(googleURL)
+	c.Wait()
 
-	return "", nil
+	return
 }
