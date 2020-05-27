@@ -47,6 +47,7 @@ func (q *Query) NextQuestion() (question string) {
 
 		return
 	case File:
+		q.scanner.Scan()
 		question = q.scanner.Text()
 	}
 
@@ -87,15 +88,41 @@ func main() {
 			q := QueryFromContext(c)
 			question := q.NextQuestion()
 
-			for len(question) > 0 {
-				answer, err := GetAnswer(question)
-				if err != nil {
-					log.Fatal(err)
-				}
+			resultChan := make(chan string)
+			errChan := make(chan error)
 
-				fmt.Println(answer)
+			var workers []chan bool
+
+			for i := 0; len(question) > 0; i++ {
+				workers = append(workers, make(chan bool))
+				worker := i
+
+				go func() {
+					answer, err := GetAnswer(question)
+					if err != nil {
+						errChan <- err
+					}
+
+					if worker > 0 {
+						prevErr := <-errChan
+						if prevErr != nil {
+							log.Fatal(prevErr)
+						} else {
+							fmt.Println(<-resultChan)
+						}
+					}
+
+					resultChan <- answer
+					errChan <- err
+
+					workers[worker] <- true
+				}()
 
 				question = q.NextQuestion()
+			}
+
+			for _, worker := range workers {
+				<-worker
 			}
 
 			return nil
@@ -122,7 +149,7 @@ func GetAnswer(question string) (answer string, err error) {
 		if strings.Contains(link, "quizlet.com") && !strings.Contains(link, "create-set") && i < MaxSources {
 			c.OnRequest(func(r *colly.Request) {
 				r.Headers.Set("Accept", "*/*")
-				r.Headers.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:76.0) Gecko/20100101 Firefox/76.0")
+				r.Headers.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.122 Safari/537.36")
 			})
 
 			lParts := strings.Split(link, "=")
@@ -137,9 +164,11 @@ func GetAnswer(question string) (answer string, err error) {
 	})
 
 	c.OnHTML(".SetPageTerm-inner", func(e *colly.HTMLElement) {
-		if strings.ToLower(e.ChildText(".SetPageTerm-wordText")) == strings.ToLower(question) {
+		if strings.Contains(strings.ToLower(e.ChildText(".SetPageTerm-wordText")), strings.ToLower(question)) {
 			possibleAnswer := e.ChildText(".SetPageTerm-definitionText")
 			occurrences[possibleAnswer]++
+
+			fmt.Println(possibleAnswer)
 
 			if occurrences[possibleAnswer] > occurrences[answer] {
 				answer = possibleAnswer
@@ -148,6 +177,7 @@ func GetAnswer(question string) (answer string, err error) {
 	})
 
 	c.OnError(func(_ *colly.Response, reqErr error) {
+		fmt.Println(reqErr)
 		err = reqErr
 	})
 
