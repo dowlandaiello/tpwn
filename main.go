@@ -2,7 +2,6 @@ package main
 
 import (
 	"strings"
-	"sync"
 
 	"github.com/gocolly/colly/v2"
 	"github.com/urfave/cli/v2"
@@ -90,62 +89,15 @@ func main() {
 			q := QueryFromContext(c)
 			question := q.NextQuestion()
 
-			// Incrementally output results from each worker goroutine
-			resultChan := make(chan []string)
-			errChan := make(chan error)
+			for len(question) > 0 {
+				answer, err := GetAnswer(question)
+				if err != nil {
+					log.Fatal(err)
+				}
 
-			var wg sync.WaitGroup
-
-			var i int
-			for i = 0; len(question) > 0; i++ {
-				worker := i
-
-				// Keep a copy of the question since the next worker will look at the next one
-				currQuestion := question
-
-				go func() {
-					// Load the answer
-					answer, err := GetAnswer(currQuestion)
-					if err != nil {
-						errChan <- err
-					}
-
-					answerMap := make(map[int]string)
-
-					if worker > 0 {
-						// Print out previous answers if we're not the first goroutine
-						select {
-						case prevErr := <-errChan:
-							if prevErr != nil {
-								log.Fatal(prevErr)
-							}
-						case prevAnswer := <-resultChan:
-							fmt.Println(prevAnswer)
-
-							if prevAnswer
-						}
-					}
-
-					// We're done!
-					resultChan <- answer
-					errChan <- err
-
-					wg.Done()
-				}()
+				fmt.Println(answer)
 
 				question = q.NextQuestion()
-			}
-
-			wg.Add(i)
-			wg.Wait()
-
-			select {
-			case lastAnswer := <-resultChan:
-				fmt.Println(lastAnswer)
-			case lastErr := <-errChan:
-				if lastErr != nil {
-					log.Fatal(lastErr)
-				}
 			}
 
 			return nil
