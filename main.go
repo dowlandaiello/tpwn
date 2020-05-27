@@ -2,6 +2,7 @@ package main
 
 import (
 	"strings"
+	"sync"
 
 	"github.com/gocolly/colly/v2"
 	"github.com/urfave/cli/v2"
@@ -85,44 +86,66 @@ func main() {
 		Name:  "tpwn",
 		Usage: "parse a dump of numbered questions, and search for appropriate answers on quizlet.com",
 		Action: func(c *cli.Context) error {
+			// Load questions from CLI args or from a local file
 			q := QueryFromContext(c)
 			question := q.NextQuestion()
 
-			resultChan := make(chan string)
+			// Incrementally output results from each worker goroutine
+			resultChan := make(chan []string)
 			errChan := make(chan error)
 
-			var workers []chan bool
+			var wg sync.WaitGroup
 
-			for i := 0; len(question) > 0; i++ {
-				workers = append(workers, make(chan bool))
+			var i int
+			for i = 0; len(question) > 0; i++ {
 				worker := i
 
+				// Keep a copy of the question since the next worker will look at the next one
+				currQuestion := question
+
 				go func() {
-					answer, err := GetAnswer(question)
+					// Load the answer
+					answer, err := GetAnswer(currQuestion)
 					if err != nil {
 						errChan <- err
 					}
 
+					answerMap := make(map[int]string)
+
 					if worker > 0 {
-						prevErr := <-errChan
-						if prevErr != nil {
-							log.Fatal(prevErr)
-						} else {
-							fmt.Println(<-resultChan)
+						// Print out previous answers if we're not the first goroutine
+						select {
+						case prevErr := <-errChan:
+							if prevErr != nil {
+								log.Fatal(prevErr)
+							}
+						case prevAnswer := <-resultChan:
+							fmt.Println(prevAnswer)
+
+							if prevAnswer
 						}
 					}
 
+					// We're done!
 					resultChan <- answer
 					errChan <- err
 
-					workers[worker] <- true
+					wg.Done()
 				}()
 
 				question = q.NextQuestion()
 			}
 
-			for _, worker := range workers {
-				<-worker
+			wg.Add(i)
+			wg.Wait()
+
+			select {
+			case lastAnswer := <-resultChan:
+				fmt.Println(lastAnswer)
+			case lastErr := <-errChan:
+				if lastErr != nil {
+					log.Fatal(lastErr)
+				}
 			}
 
 			return nil
@@ -138,11 +161,13 @@ func GetAnswer(question string) (answer string, err error) {
 
 	occurrences := make(map[string]int)
 
+	// Don't recurse, since that wouldn't bring us to the right study set
 	c := colly.NewCollector(colly.MaxDepth(0), colly.Async(true))
 	c.Limit(&colly.LimitRule{DomainGlob: "*", Parallelism: 5})
 
 	i := 0
 
+	// Load a bunch of quizlet study sets from google
 	c.OnHTML("a[href]", func(e *colly.HTMLElement) {
 		link := e.Attr("href")
 
@@ -157,25 +182,30 @@ func GetAnswer(question string) (answer string, err error) {
 				link = lParts[1]
 			}
 
+			fmt.Printf("spawning clicker: %d\n", i)
+
 			i++
 
 			c.Visit(link)
 		}
 	})
 
+	// Look for the answer to the question
 	c.OnHTML(".SetPageTerm-inner", func(e *colly.HTMLElement) {
+		// Make sure the question appears somewhere on the page, look for where it appears
 		if strings.Contains(strings.ToLower(e.ChildText(".SetPageTerm-wordText")), strings.ToLower(question)) {
+			// Get the answer to the question by its class
 			possibleAnswer := e.ChildText(".SetPageTerm-definitionText")
 			occurrences[possibleAnswer]++
 
-			fmt.Println(possibleAnswer)
-
+			// For each worker that's using a different study set, make ensure the given answer is the most popular
 			if occurrences[possibleAnswer] > occurrences[answer] {
 				answer = possibleAnswer
 			}
 		}
 	})
 
+	// Write any errors to the output buffer
 	c.OnError(func(_ *colly.Response, reqErr error) {
 		fmt.Println(reqErr)
 		err = reqErr
