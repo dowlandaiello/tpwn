@@ -134,8 +134,6 @@ func GetAnswer(question string) (answer string, err error) {
 				link = lParts[1]
 			}
 
-			fmt.Printf("spawning clicker: %d\n", i)
-
 			i++
 
 			c.Visit(link)
@@ -159,7 +157,6 @@ func GetAnswer(question string) (answer string, err error) {
 
 	// Write any errors to the output buffer
 	c.OnError(func(_ *colly.Response, reqErr error) {
-		fmt.Println(reqErr)
 		err = reqErr
 	})
 
