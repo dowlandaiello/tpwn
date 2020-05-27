@@ -13,7 +13,7 @@ import (
 )
 
 // MaxSources is the maximum number of quizlet sets that will be scanned.
-const MaxSources = 5
+const MaxSources = 3
 
 // QueryType represents all possible types of queries.
 type QueryType int
